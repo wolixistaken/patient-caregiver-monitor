@@ -82,7 +82,7 @@ const LoginScreen = ({ setUserRole, navigation }) => {
 
           <View style={styles.footerContainer}>
             <Text style={styles.footerText}>Hesabınız yok mu? </Text>
-            <TouchableOpacity onPress={() => navigation.navigate('SignUp')}>
+            <TouchableOpacity onPress={() => navigation.navigate("SignUp")}>
               <Text style={styles.signupText}>Hemen Kaydolun</Text>
             </TouchableOpacity>
           </View>
