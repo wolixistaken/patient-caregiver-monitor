@@ -1,70 +1,151 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
-  View, Text, StyleSheet, ScrollView, TouchableOpacity, Dimensions, Alert, StatusBar, Modal
+  View, Text, StyleSheet, ScrollView, TouchableOpacity, Dimensions, Alert, StatusBar, Modal, TextInput, KeyboardAvoidingView, Platform, Image
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { LineChart } from 'react-native-chart-kit';
 import { useFocusEffect } from '@react-navigation/native'; 
 import auth from '@react-native-firebase/auth';
+import { launchImageLibrary } from 'react-native-image-picker'; // EKLENDİ
+import AsyncStorage from '@react-native-async-storage/async-storage'; // EKLENDİ
 
 import BleService from '../../services/BleService';
 import { authService } from '../../services/authService';
 import { sendEmergencySms } from '../../utils/SmsHelper';
 
 const screenWidth = Dimensions.get('window').width;
-const STEP_GOAL = 10000; 
-const INACTIVITY_LIMIT = 30 * 60 * 1000; // 30 Dakika (Milisaniye cinsinden)
+const INACTIVITY_LIMIT = 30 * 60 * 1000; // 30 Dakika (Hareketsizlik süresi)
 
 const PatientHomeScreen = ({ navigation }) => {
-  // State Tanımları
+  // --- STATE TANIMLARI ---
   const [heartRate, setHeartRate] = useState(0);
-  const [steps, setSteps] = useState(0);
   const [status, setStatus] = useState('Normal'); 
   const [isConnected, setIsConnected] = useState(false);
   
-  // Grafik ve Veri
+  // Grafik ve Hasta Verisi
   const [historyData, setHistoryData] = useState([70, 72, 71, 73, 72]); 
   const [currentMinuteAvg, setCurrentMinuteAvg] = useState(72);
   const [patientData, setPatientData] = useState(null);
-  
-  // Düşme Algılama
-  const [isFallDetected, setIsFallDetected] = useState(false);
-  const [countdown, setCountdown] = useState(10);
 
-  // --- YENİ: HAREKETSİZLİK STATE'İ ---
+  // Yerel Resim State'i (YENİ)
+  const [localProfileImage, setLocalProfileImage] = useState(null);
+  
+  // Alarmlar
+  const [isFallDetected, setIsFallDetected] = useState(false);
+  const [isPanicMode, setIsPanicMode] = useState(false); 
+  const [countdown, setCountdown] = useState(10);
   const [isInactivityDetected, setIsInactivityDetected] = useState(false);
+  const [lastActivityTimeStr, setLastActivityTimeStr] = useState(new Date().toLocaleTimeString().slice(0,5));
+
+  // --- MODAL (DÜZENLEME) STATE ---
+  const [isEditModalVisible, setEditModalVisible] = useState(false);
+  const [editForm, setEditForm] = useState({
+    age: '',
+    bloodType: '',
+    minHeartRate: '50',
+    maxHeartRate: '120',
+    photoUri: null, // YENİ: Resim yolu
+  });
 
   // --- REFS ---
   const patientDataRef = useRef(null);
   const heartRateRef = useRef(0);
   const isFallDetectedRef = useRef(false);
   const minuteBuffer = useRef([]); 
-  const lastAlertTime = useRef(0);
-  
-  // --- YENİ: SON HAREKET ZAMANI REF ---
+  const lastHeartRateSmsTime = useRef(0);
   const lastMovementTime = useRef(Date.now());
 
-  // State'leri Ref ile senkronize et
+  // Ref Senkronizasyonu
   useEffect(() => { patientDataRef.current = patientData; }, [patientData]);
   useEffect(() => { heartRateRef.current = heartRate; }, [heartRate]);
   useEffect(() => { isFallDetectedRef.current = isFallDetected; }, [isFallDetected]);
 
-  // Ayarları Yükle
+  // --- VERİ YÜKLEME ---
+  const loadSettings = useCallback(async () => {
+    const currentUser = auth().currentUser;
+    if (currentUser) {
+        // 1. Veritabanından verileri çek
+        const data = await authService.getPatientData(currentUser.uid);
+        
+        // 2. Telefondan kayıtlı resmi çek (YENİ)
+        const savedImage = await AsyncStorage.getItem(`profileImage_${currentUser.uid}`);
+        if (savedImage) {
+            setLocalProfileImage(savedImage);
+        }
+
+        if (data) {
+            setPatientData(data);
+            // Edit formunu doldur
+            setEditForm({
+                age: data.age || '',
+                bloodType: data.bloodType || '',
+                minHeartRate: data.thresholds?.minHeartRate ? String(data.thresholds.minHeartRate) : '50',
+                maxHeartRate: data.thresholds?.maxHeartRate ? String(data.thresholds.maxHeartRate) : '120',
+                photoUri: savedImage || null, // Form açılınca mevcut resim gelsin
+            });
+        }
+    }
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
-      const loadSettings = async () => {
-        const currentUser = auth().currentUser;
-        if (currentUser) {
-            const data = await authService.getPatientData(currentUser.uid);
-            if (data) setPatientData(data);
-        }
-      };
       loadSettings();
-    }, [])
+    }, [loadSettings])
   );
 
-  // --- BLUETOOTH VE SENSÖR DİNLEYİCİSİ ---
+  // --- FOTOĞRAF SEÇME (YENİ) ---
+  const handleSelectPhoto = () => {
+    const options = { mediaType: 'photo', quality: 0.7 };
+    launchImageLibrary(options, (response) => {
+      if (response.didCancel) return;
+      if (response.errorMessage) {
+        Alert.alert("Hata", "Resim seçilemedi.");
+        return;
+      }
+      if (response.assets && response.assets.length > 0) {
+        const uri = response.assets[0].uri;
+        setEditForm(prev => ({ ...prev, photoUri: uri }));
+      }
+    });
+  };
+
+  // --- AYARLARI KAYDETME ---
+  const handleSaveSettings = async () => {
+    const currentUser = auth().currentUser;
+    if (!currentUser) return;
+
+    try {
+        // 1. Resmi Telefona Kaydet (YENİ)
+        if (editForm.photoUri) {
+            await AsyncStorage.setItem(`profileImage_${currentUser.uid}`, editForm.photoUri);
+            setLocalProfileImage(editForm.photoUri); // Ekranı anında güncelle
+        }
+
+        // 2. Diğer verileri Firestore'a kaydet
+        const updatedData = {
+            age: editForm.age,
+            bloodType: editForm.bloodType,
+            thresholds: {
+                minHeartRate: parseInt(editForm.minHeartRate) || 50,
+                maxHeartRate: parseInt(editForm.maxHeartRate) || 120
+            }
+        };
+
+        const success = await authService.updatePatientData(currentUser.uid, updatedData);
+        if (success) {
+            Alert.alert("Başarılı", "Profil bilgileri güncellendi.");
+            setEditModalVisible(false);
+            loadSettings(); // Ekranı yenile
+        } else {
+            Alert.alert("Hata", "Güncelleme yapılamadı.");
+        }
+    } catch (e) {
+        Alert.alert("Hata", "Beklenmedik bir hata oluştu.");
+    }
+  };
+
+  // --- BLE VE SENSÖR DİNLEYİCİSİ ---
   useEffect(() => {
     let isMounted = true;
 
@@ -77,31 +158,19 @@ const PatientHomeScreen = ({ navigation }) => {
 
     const onMotion = (motion) => {
         if (!isMounted) return;
-        
-        // Vektörel büyüklük hesapla
         const totalAccel = Math.sqrt(motion.x ** 2 + motion.y ** 2 + motion.z ** 2);
         
-        // --- DÜŞME KONTROLÜ ---
-        const FALL_THRESHOLD = 25000; 
-        if (totalAccel > FALL_THRESHOLD) {
-           if (!isFallDetectedRef.current) {
-              console.log("!!! DÜŞME ALGILANDI !!!");
-              triggerFallAlarm();
-           }
+        // 1. Düşme Kontrolü (>2.5G)
+        if (totalAccel > 25000 && !isFallDetectedRef.current) {
+            triggerFallAlarm();
         }
 
-        // --- YENİ: HAREKET KONTROLÜ (İmmobilite için) ---
-        // Normal duruş (yerçekimi) yaklaşık 16000 civarıdır.
-        // Eğer ivme bunun biraz üzerine çıkarsa veya altına inerse hareket var demektir.
-        // Hassasiyeti ayarlamak için: 1000 birimlik değişim yeterli diyelim.
-        const GRAVITY = 16384; 
-        const MOVEMENT_THRESHOLD = 2000; 
-
-        if (Math.abs(totalAccel - GRAVITY) > MOVEMENT_THRESHOLD) {
-            // Hareket algılandı, sayacı sıfırla
+        // 2. Hareket Kontrolü (Hareketsizlik tespiti için)
+        if (Math.abs(totalAccel - 16384) > 2000) {
             lastMovementTime.current = Date.now();
+            const nowStr = new Date().toLocaleTimeString().slice(0,5);
+            setLastActivityTimeStr(prev => (prev !== nowStr ? nowStr : prev));
             
-            // Eğer hareketsizlik uyarısı açıksa kapat
             if (isInactivityDetected) {
                 setIsInactivityDetected(false);
                 setStatus('Normal');
@@ -112,247 +181,300 @@ const PatientHomeScreen = ({ navigation }) => {
     const initBle = async () => {
       const permission = await BleService.requestPermissions();
       if (permission && isMounted) {
-        
-        // Veri dinleyicilerini başlat
         BleService.setDataListeners(onHeartRate, onMotion);
-
-        // Bağlan (MTU isteği BleService içinde yapılıyor)
-        const DEVICE_NAME = 'cdtp'; 
-        console.log("UI: Cihaz aranıyor...", DEVICE_NAME);
-        
-        BleService.scanAndConnect(DEVICE_NAME, (device) => {
+        BleService.scanAndConnect('cdtp', (device) => {
             if(isMounted) setIsConnected(true);
-            console.log("UI: Bağlantı Durumu Güncellendi.");
         });
       }
     };
 
     initBle();
+    return () => { isMounted = false; BleService.disconnect(); };
+  }, [isInactivityDetected]); 
 
-    return () => {
-      isMounted = false;
-      BleService.disconnect();
-    };
-  }, [isInactivityDetected]); // State dependency eklendi
-
-  // --- YENİ: HAREKETSİZLİK ZAMANLAYICISI ---
+  // --- HAREKETSİZLİK ALARMI (Zamanlayıcı) ---
   useEffect(() => {
     const interval = setInterval(() => {
-        const now = Date.now();
-        const timeDiff = now - lastMovementTime.current;
-
-        // Eğer süre dolduysa ve zaten uyarı vermediysek ve düşme alarmı yoksa
+        const timeDiff = Date.now() - lastMovementTime.current;
         if (timeDiff > INACTIVITY_LIMIT && !isInactivityDetected && !isFallDetected) {
             setIsInactivityDetected(true);
-            setStatus('Uzun Süre Hareketsiz');
+            setStatus('Hareketsiz');
             Alert.alert(
                 "Hareketsizlik Uyarısı",
                 "Uzun süredir hareket etmediğiniz tespit edildi. İyi misiniz?",
                 [
-                    { text: "İyiyim", onPress: () => {
-                        lastMovementTime.current = Date.now(); // Sıfırla
-                        setIsInactivityDetected(false);
-                        setStatus('Normal');
+                    { text: "İyiyim", onPress: () => { 
+                        lastMovementTime.current = Date.now(); 
+                        setIsInactivityDetected(false); 
+                        setStatus('Normal'); 
                     }},
-                    { text: "Yardım Çağır", onPress: () => sendInactivitySMS() }
+                    { text: "Yardım", onPress: () => sendInactivitySMS() }
                 ]
             );
         }
-    }, 10000); // Her 10 saniyede bir kontrol et
-
+    }, 10000); // 10 saniyede bir kontrol
     return () => clearInterval(interval);
   }, [isInactivityDetected, isFallDetected]);
 
-
-  // --- YARDIMCI FONKSİYONLAR ---
-  const sendInactivitySMS = useCallback(() => {
-    const pData = patientDataRef.current;
-    if (!pData?.emergencyContacts?.length) {
-        Alert.alert("Hata", "Acil durum kişisi bulunamadı.");
-        return;
-    }
-    const message = `⚠️ UYARI: Hastanız uzun süredir (${INACTIVITY_LIMIT / 60000} dk) hareketsiz görünüyor. Kontrol etmeniz önerilir. Nabız: ${heartRateRef.current}`;
-    pData.emergencyContacts.forEach(c => sendEmergencySms(c.phone, message));
-    Alert.alert("Bilgi", "Yakınlarınıza bilgi mesajı gönderildi.");
-  }, []);
-
-  const sendActualFallSMS = useCallback(() => {
-    const pData = patientDataRef.current;
-    if (!pData?.emergencyContacts?.length) return;
-    const message = `🚨 ACİL DURUM: Hastanız düştü! Nabız: ${heartRateRef.current} BPM.`;
-    pData.emergencyContacts.forEach(c => sendEmergencySms(c.phone, message));
-    Alert.alert("GÖNDERİLDİ", "Acil durum mesajı iletildi.");
-    setStatus('Yardım Çağrıldı');
-  }, []);
-
-  const resetFallAlarm = useCallback(() => {
-    setIsFallDetected(false);
-    setCountdown(10);
-    setStatus('Normal');
-  }, []);
-
-  const triggerFallAlarm = useCallback(() => {
-    setStatus('DÜŞME TESPİT EDİLDİ!');
-    setIsFallDetected(true);
-    setCountdown(10);
-  }, []);
-
-  const processChartData = useCallback((hrValue) => {
-    minuteBuffer.current.push(hrValue);
-    const sum = minuteBuffer.current.reduce((a, b) => a + b, 0);
-    const avg = Math.round(sum / minuteBuffer.current.length);
-    setCurrentMinuteAvg(avg);
-
-    if (minuteBuffer.current.length >= 60) {
-        setHistoryData(prev => [...prev.slice(1), avg]);
-        minuteBuffer.current = [];
-        setCurrentMinuteAvg(hrValue); 
-    }
-  }, []);
+  // --- YARDIMCI METODLAR ---
 
   const checkHeartRateHealth = useCallback((currentHr) => {
     const pData = patientDataRef.current;
-    if (!pData || isFallDetectedRef.current || isInactivityDetected) return; // Diğer alarmlar öncelikli
-
-    const { minHeartRate, maxHeartRate } = pData.thresholds || { minHeartRate: 50, maxHeartRate: 120 };
-    const now = Date.now();
+    if (!pData || isFallDetectedRef.current) return;
     
-    if (now - lastAlertTime.current < 60000) return;
-
-    if (currentHr > maxHeartRate) {
-        setStatus('Yüksek Nabız');
-    } else if (currentHr < minHeartRate && currentHr > 10) {
-        setStatus('Düşük Nabız');
-    } else {
+    // Veritabanından gelen eşikleri kullan, yoksa varsayılan
+    const { minHeartRate, maxHeartRate } = pData.thresholds || { minHeartRate: 50, maxHeartRate: 120 };
+    
+    if (currentHr > maxHeartRate || (currentHr < minHeartRate && currentHr > 10)) {
+        setStatus(currentHr > maxHeartRate ? 'Yüksek Nabız' : 'Düşük Nabız');
+        
+        // 5 Dakika (300000ms) SMS kilidi
+        if (Date.now() - lastHeartRateSmsTime.current > 300000) {
+            if (pData.emergencyContacts?.length) {
+                pData.emergencyContacts.forEach(c => sendEmergencySms(c.phone, `🚨 ACİL: Hastanızın nabzı kritik seviyede (${currentHr} BPM).`));
+                lastHeartRateSmsTime.current = Date.now();
+            }
+        }
+    } else if (!isInactivityDetected) {
         setStatus('Normal');
     }
   }, [isInactivityDetected]);
 
-  const handleSOS = useCallback(() => {
+  const sendInactivitySMS = useCallback(() => {
     const pData = patientDataRef.current;
-    if (pData?.emergencyContacts?.length > 0) {
-        pData.emergencyContacts.forEach(c => sendEmergencySms(c.phone, "YARDIM EDİN! Manuel SOS."));
-        Alert.alert("SOS", "Yardım mesajı gönderildi!");
-    } else {
-        Alert.alert("Hata", "Lütfen kişi ekleyin.");
+    if (pData?.emergencyContacts?.length) {
+        pData.emergencyContacts.forEach(c => sendEmergencySms(c.phone, `⚠️ UYARI: Hastanız uzun süredir hareketsiz. Kontrol ediniz.`));
     }
   }, []);
 
-  // --- SAYAÇ (Düşme İçin) ---
+  const sendActualFallSMS = useCallback(() => {
+    const pData = patientDataRef.current;
+    if (pData?.emergencyContacts?.length) {
+        pData.emergencyContacts.forEach(c => sendEmergencySms(c.phone, `🚨 DÜŞME ALGILANDI! Hastanız düşmüş olabilir.`));
+    }
+    setStatus('Yardım Çağrıldı');
+  }, []);
+
+  const handleSOS = useCallback(() => {
+    setIsPanicMode(true);
+    const pData = patientDataRef.current;
+    if (pData?.emergencyContacts?.length) {
+        pData.emergencyContacts.forEach(c => sendEmergencySms(c.phone, "YARDIM EDİN! Manuel SOS Butonuna Basıldı."));
+        Alert.alert("SOS", "Yardım mesajı gönderildi!");
+    } else {
+        Alert.alert("Hata", "Kişi listesi boş, mesaj atılamadı.");
+    }
+    setTimeout(() => setIsPanicMode(false), 2000);
+  }, []);
+
+  const processChartData = useCallback((hrValue) => {
+    minuteBuffer.current.push(hrValue);
+    if (minuteBuffer.current.length >= 60) {
+        const avg = Math.round(minuteBuffer.current.reduce((a, b) => a + b, 0) / 60);
+        setHistoryData(prev => [...prev.slice(1), avg]);
+        minuteBuffer.current = [];
+        setCurrentMinuteAvg(hrValue); 
+    } else {
+        const currentAvg = Math.round(minuteBuffer.current.reduce((a, b) => a + b, 0) / minuteBuffer.current.length);
+        setCurrentMinuteAvg(currentAvg);
+    }
+  }, []);
+
+  const triggerFallAlarm = useCallback(() => { 
+      setStatus('DÜŞME!'); 
+      setIsFallDetected(true); 
+      setCountdown(10); 
+  }, []);
+
+  const resetFallAlarm = useCallback(() => { 
+      setIsFallDetected(false); 
+      setCountdown(10); 
+      setStatus('Normal'); 
+  }, []);
+
   useEffect(() => {
     let interval = null;
-    if (isFallDetected) {
-        interval = setInterval(() => {
-            setCountdown((prev) => {
-                if (prev <= 1) return 0;
-                return prev - 1;
-            });
-        }, 1000);
-    }
+    if (isFallDetected) interval = setInterval(() => setCountdown(p => (p <= 1 ? 0 : p - 1)), 1000);
     return () => clearInterval(interval);
   }, [isFallDetected]);
 
-  useEffect(() => {
-    if (isFallDetected && countdown === 0) {
-        sendActualFallSMS();
-        resetFallAlarm();
-    }
-  }, [isFallDetected, countdown, sendActualFallSMS, resetFallAlarm]);
+  useEffect(() => { 
+      if (isFallDetected && countdown === 0) { 
+          sendActualFallSMS(); 
+          resetFallAlarm(); 
+      } 
+  }, [isFallDetected, countdown]);
 
-
-  const progressPercent = Math.min((steps / STEP_GOAL) * 100, 100);
-  const combinedChartData = [...historyData, currentMinuteAvg];
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: 'rgba(248, 249, 250, 1)' }}>
-      <StatusBar barStyle="dark-content" backgroundColor="#F8F9FA" />
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 30 }} showsVerticalScrollIndicator={false}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: '#3b5998' }}> 
+      <StatusBar barStyle="light-content" backgroundColor="#3b5998" />
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 50 }} showsVerticalScrollIndicator={false}>
         
-        {/* Bağlantı Durumu */}
+        {/* HEADER */}
         <View style={styles.header}>
-          <View style={[styles.statusBadge, { backgroundColor: isConnected ? '#D1FAE5' : '#FEE2E2' }]}>
-            <Icon name={isConnected ? "bluetooth-connect" : "bluetooth-off"} size={16} color={isConnected ? '#059669' : '#DC2626'} />
-            <Text style={[styles.statusText, { color: isConnected ? '#059669' : '#DC2626' }]}>
-              {isConnected ? ' Sensör Bağlı' : ' Sensör Aranıyor...'}
-            </Text>
-          </View>
+            <View style={{flexDirection:'row', alignItems:'center'}}>
+                <Icon name="menu" size={30} color="#fff" />
+                <Text style={styles.headerTitle}>Patient Monitor</Text>
+            </View>
+            <View style={[styles.statusDot, { backgroundColor: isConnected ? '#0f0' : '#f00' }]} />
         </View>
 
-        {/* Nabız Kartı */}
+        {/* KİŞİ KARTI */}
         <View style={styles.card}>
-          <View style={styles.cardHeaderRow}>
-            <Text style={styles.cardTitle}>Anlık Kalp Atış Hızı</Text>
-            <Icon name="heart" size={24} color="#EF4444" />
+            <View style={styles.profileRow}>
+                <View style={styles.avatarContainer}>
+                    {/* RESİM GÖSTERİMİ */}
+                    {localProfileImage ? (
+                        <Image source={{ uri: localProfileImage }} style={styles.avatarImage} />
+                    ) : (
+                        <Icon name="account" size={40} color="#4A90E2" />
+                    )}
+                </View>
+                <View style={styles.profileInfo}>
+                    {/* İSİM DÜZELTMESİ (name) */}
+                    <Text style={styles.nameText}>{patientData?.name || "Kullanıcı"}</Text>
+                    <Text style={styles.subText}>Hasta Profili</Text>
+                </View>
+                {/* Düzenleme Butonu */}
+                <TouchableOpacity onPress={() => setEditModalVisible(true)} style={{ marginLeft: 'auto', padding: 5 }}>
+                    <Icon name="pencil" size={24} color="#fff" />
+                </TouchableOpacity>
+            </View>
+            <View style={styles.divider} />
+            <View style={styles.infoRow}>
+                <View style={styles.infoItem}>
+                    <Icon name="calendar-clock" size={20} color="#FFD700" />
+                    <Text style={styles.infoLabel}>YAŞ</Text>
+                    <Text style={styles.infoValue}>{patientData?.age || "--"}</Text>
+                </View>
+                <View style={styles.infoItem}>
+                    <Icon name="water" size={20} color="#FF4444" />
+                    <Text style={styles.infoLabel}>KAN GRUBU</Text>
+                    <Text style={styles.infoValue}>{patientData?.bloodType || "--"}</Text>
+                </View>
+            </View>
+        </View>
+
+        {/* NABIZ KARTI */}
+        <View style={styles.card}>
+          <Text style={styles.cardTitleLabel}>HEART RATE</Text>
+          <View style={styles.bpmRow}>
+             <Text style={styles.bpmText}>{heartRate}</Text>
+             <Text style={styles.bpmUnit}>BPM</Text>
+             <Icon name="heart" size={50} color={status.includes('Normal') ? "#ff4081" : "red"} style={{marginLeft: 'auto'}} />
           </View>
-          <View style={styles.bpmContainer}>
-            <Text style={[styles.bpmValue, { color: status === 'Normal' ? '#1F2937' : '#EF4444' }]}>
-              {heartRate}
-            </Text>
-            <Text style={styles.bpmUnit}>BPM</Text>
-          </View>
-          <Text style={styles.subtitle}>Son 5 dakika verileri</Text>
           <LineChart
-            data={{
-              labels: ["-5dk", "-4dk", "-3dk", "-2dk", "-1dk", "Şimdi"],
-              datasets: [{ data: combinedChartData }, { data: [50, 130], color: () => 'transparent', strokeWidth: 0, withDots: false }]
-            }}
-            width={screenWidth - 64}
-            height={220}
-            yAxisInterval={1} 
-            fromZero={false}
+            data={{ labels: ["-5", "-4", "-3", "-2", "-1", "0"], datasets: [{ data: [...historyData, currentMinuteAvg] }] }}
+            width={screenWidth - 80} height={140}
             chartConfig={{
-              backgroundColor: "#fff",
-              backgroundGradientFrom: "#fff",
-              backgroundGradientTo: "#fff",
-              decimalPlaces: 0, 
-              color: (opacity = 1) => `rgba(59, 130, 246, ${opacity})`,
-              labelColor: (opacity = 1) => `rgba(107, 114, 128, ${opacity})`,
-              style: { borderRadius: 16 },
-              propsForDots: { r: "4", strokeWidth: "2", stroke: "#3B82F6" }
+              backgroundColor: "transparent", backgroundGradientFromOpacity: 0, backgroundGradientToOpacity: 0,
+              decimalPlaces: 0, color: (opacity=1) => `rgba(255, 255, 255, ${opacity})`,
+              propsForDots: { r: "3", strokeWidth: "1", stroke: "#fff" }
             }}
-            bezier
-            style={{ marginTop: 20, borderRadius: 16, alignItems:'center', marginLeft:-20 }}
+            bezier style={{ marginTop: 10 }}
           />
         </View>
 
-        {/* Adım / Durum Kartı */}
-        <View style={styles.card}>
-          <View style={styles.cardHeaderRow}>
-            <View style={{flexDirection:'row', alignItems:'center'}}>
-               <Icon name="walk" size={24} color="#3B82F6" style={{marginRight: 8}}/>
-               <Text style={styles.cardTitle}>Günlük Aktivite</Text>
+        {/* DURUM KARTLARI (2'li GRID) */}
+        <View style={styles.statusGrid}>
+            <View style={[styles.statusCard, isFallDetected && styles.alarmCardRed]}>
+                <Icon name="human-accidental-fall" size={28} color={isFallDetected ? "#fff" : "#ff4081"} />
+                <Text style={[styles.statusLabel, isFallDetected && {color:'#fff'}]}>Düşme</Text>
+                <Text style={[styles.statusValue, isFallDetected && {color:'#fff'}]}>
+                    {isFallDetected ? "TESPİT!" : "Yok"}
+                </Text>
             </View>
-            <Text style={styles.stepGoalText}>{steps.toLocaleString()} / {STEP_GOAL.toLocaleString()} Adım</Text>
-          </View>
-          <View style={styles.progressBarContainer}>
-            <View style={[styles.progressBarFill, { width: `${progressPercent}%` }]} />
-          </View>
-          <Text style={styles.statusSubtitle}>
-            Şu anki durum: <Text style={{fontWeight:'bold', color: status === 'Normal' ? '#111827' : '#EF4444'}}>{status}</Text>
-          </Text>
+
+            <View style={[styles.statusCard, isInactivityDetected && styles.alarmCardOrange]}>
+                <Icon name="run" size={28} color={isInactivityDetected ? "#fff" : "#ff4081"} />
+                <Text style={[styles.statusLabel, isInactivityDetected && {color:'#fff'}]}>Hareket</Text>
+                <Text style={[styles.statusValue, isInactivityDetected && {color:'#fff'}]}>
+                    {isInactivityDetected ? "Hareketsiz" : "Aktif"}
+                </Text>
+                <Text style={[styles.timeText, isInactivityDetected && {color:'#fff'}]}>
+                    Son: {lastActivityTimeStr}
+                </Text>
+            </View>
         </View>
 
-        {/* SOS Butonu */}
-        <TouchableOpacity style={styles.sosContainer} onPress={handleSOS}>
-          <View style={styles.sosButtonOuter}>
-            <View style={styles.sosButtonInner}>
-                <Text style={styles.sosTextLabel}>SOS</Text>
-                <Text style={styles.sosSubText}>Acil Yardım</Text>
-            </View>
-          </View>
-        </TouchableOpacity>
+        {/* SOS BUTONU */}
+        <View style={styles.sosContainer}>
+            <TouchableOpacity 
+                style={[styles.sosButton, isPanicMode && { transform: [{scale: 0.95}] }]}
+                activeOpacity={0.7}
+                onPress={handleSOS}
+            >
+                <View style={styles.sosInnerCircle}>
+                    <Text style={styles.sosText}>SOS</Text>
+                    <Icon name="broadcast" size={24} color="#fff" style={{marginTop: 5}}/>
+                </View>
+            </TouchableOpacity>
+            <Text style={styles.sosLabel}>Acil Durum Panik Butonu</Text>
+        </View>
 
-        {/* Düşme Alarmı Modalı */}
-        <Modal visible={isFallDetected} transparent={true} animationType="slide" onRequestClose={() => {}}>
-            <View style={styles.modalOverlay}>
+        {/* DÜZENLEME MODALI */}
+        <Modal visible={isEditModalVisible} animationType="slide" transparent={true} onRequestClose={() => setEditModalVisible(false)}>
+            <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalOverlay}>
+                <View style={styles.modalContent}>
+                    <Text style={styles.modalTitle}>Bilgileri Düzenle</Text>
+                    
+                    {/* FOTOĞRAF SEÇME ALANI (YENİ) */}
+                    <View style={{ alignItems: 'center', marginBottom: 20 }}>
+                        <TouchableOpacity onPress={handleSelectPhoto} style={styles.editAvatarContainer}>
+                            {editForm.photoUri ? (
+                                <Image source={{ uri: editForm.photoUri }} style={styles.editAvatarImage} />
+                            ) : (
+                                <Icon name="camera-plus" size={30} color="#666" />
+                            )}
+                            <View style={styles.editIconBadge}>
+                                <Icon name="pencil" size={14} color="#fff" />
+                            </View>
+                        </TouchableOpacity>
+                        <Text style={styles.changePhotoText}>Fotoğrafı Değiştir</Text>
+                    </View>
+
+                    <Text style={styles.inputLabel}>Yaş</Text>
+                    <TextInput style={styles.input} value={editForm.age} onChangeText={(t) => setEditForm({...editForm, age: t})} keyboardType="numeric"/>
+                    
+                    <Text style={styles.inputLabel}>Kan Grubu</Text>
+                    <TextInput style={styles.input} value={editForm.bloodType} onChangeText={(t) => setEditForm({...editForm, bloodType: t})}/>
+
+                    <View style={styles.dividerGray} />
+                    <Text style={styles.sectionHeader}>Alarm Eşik Değerleri</Text>
+
+                    <View style={styles.row}>
+                        <View style={{flex:1, marginRight:10}}>
+                            <Text style={styles.inputLabel}>Min Nabız</Text>
+                            <TextInput style={styles.input} value={editForm.minHeartRate} onChangeText={(t) => setEditForm({...editForm, minHeartRate: t})} keyboardType="numeric"/>
+                        </View>
+                        <View style={{flex:1}}>
+                            <Text style={styles.inputLabel}>Max Nabız</Text>
+                            <TextInput style={styles.input} value={editForm.maxHeartRate} onChangeText={(t) => setEditForm({...editForm, maxHeartRate: t})} keyboardType="numeric"/>
+                        </View>
+                    </View>
+
+                    <View style={styles.modalButtons}>
+                        <TouchableOpacity style={styles.cancelBtn} onPress={() => setEditModalVisible(false)}>
+                            <Text style={styles.btnText}>İptal</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.saveBtn} onPress={handleSaveSettings}>
+                            <Text style={styles.btnText}>Kaydet</Text>
+                        </TouchableOpacity>
+                    </View>
+                </View>
+            </KeyboardAvoidingView>
+        </Modal>
+
+        {/* DÜŞME UYARI MODALI */}
+        <Modal visible={isFallDetected} transparent={true} animationType="fade">
+            <View style={[styles.modalOverlay, {backgroundColor:'rgba(255,0,0,0.8)'}]}>
                 <View style={styles.alertBox}>
-                    <Icon name="alert-octagram" size={80} color="#EF4444" />
+                    <Icon name="alert" size={60} color="red" />
                     <Text style={styles.alertTitle}>DÜŞME ALGILANDI!</Text>
-                    <Text style={styles.alertDesc}>Sensörlerimiz düşme veya baygınlık tespit etti.</Text>
                     <Text style={styles.countdownText}>{countdown}</Text>
-                    <Text style={styles.countdownLabel}>saniye içinde yardım çağrılacak</Text>
-                    <TouchableOpacity style={styles.cancelButton} onPress={resetFallAlarm}>
-                        <Text style={styles.cancelButtonText}>İYİYİM, İPTAL ET</Text>
+                    <TouchableOpacity style={styles.cancelBtn} onPress={resetFallAlarm}>
+                        <Text style={styles.btnText}>İYİYİM</Text>
                     </TouchableOpacity>
                 </View>
             </View>
@@ -364,34 +486,93 @@ const PatientHomeScreen = ({ navigation }) => {
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 16 },
-  header: { alignItems: 'center', marginBottom: 16, marginTop: 10 },
-  statusBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20,marginTop:-20 },
-  statusText: { fontSize: 14, fontWeight: '600', marginLeft: 5 },
-  card: { backgroundColor: '#fff', borderRadius: 24, padding: 20, marginBottom: 10, shadowColor: "#000", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.05, shadowRadius: 10, elevation: 3 },
-  cardHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  cardTitle: { color: '#6B7280', fontSize: 16, fontWeight: '600' },
-  subtitle: { color: '#9CA3AF', fontSize: 13, marginTop: 4 },
-  bpmContainer: { flexDirection: 'row', alignItems: 'flex-end', marginTop: 0 },
-  bpmValue: { fontSize: 48, fontWeight: 'bold', lineHeight: 50 },
-  bpmUnit: { fontSize: 18, color: '#9CA3AF', marginBottom: 8, marginLeft: 8, fontWeight: '500' },
-  stepGoalText: { fontWeight: 'bold', color: '#111827' },
-  progressBarContainer: { height: 12, backgroundColor: '#E5E7EB', borderRadius: 6, marginTop: 1, overflow: 'hidden' },
-  progressBarFill: { height: '100%', backgroundColor: '#3B82F6', borderRadius: 6 },
-  statusSubtitle: { color: '#6B7280', fontSize: 14, marginTop: 15 },
-  sosContainer: { alignItems: 'center', marginTop: 0, marginBottom: 20 },
-  sosButtonOuter: { width: 130, height: 130, borderRadius: 65, backgroundColor: '#FEE2E2', justifyContent: 'center', alignItems: 'center', elevation: 10, shadowColor: '#EF4444', shadowOffset: {width:0, height:10}, shadowOpacity: 0.3, shadowRadius: 20 },
-  sosButtonInner: { width: 110, height: 110, borderRadius: 55, backgroundColor: '#EF4444', justifyContent: 'center', alignItems: 'center', borderWidth: 4, borderColor: '#FECACA' },
-  sosTextLabel: { color: '#fff', fontSize: 32, fontWeight: '900' },
-  sosSubText: { color: 'rgba(255,255,255,0.9)', fontSize: 11, marginTop: 2 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(220, 38, 38, 0.9)', justifyContent: 'center', alignItems: 'center', padding: 20 },
-  alertBox: { backgroundColor: '#fff', width: '100%', borderRadius: 30, padding: 30, alignItems: 'center', elevation: 20 },
-  alertTitle: { fontSize: 26, fontWeight: 'bold', color: '#DC2626', marginTop: 10 },
-  alertDesc: { fontSize: 16, color: '#4B5563', textAlign: 'center', marginTop: 5, marginBottom: 20 },
-  countdownText: { fontSize: 80, fontWeight: 'bold', color: '#DC2626' },
-  countdownLabel: { fontSize: 16, color: '#6B7280', marginBottom: 30 },
-  cancelButton: { backgroundColor: '#10B981', paddingVertical: 15, paddingHorizontal: 40, borderRadius: 50, width: '100%', alignItems: 'center' },
-  cancelButtonText: { color: '#fff', fontSize: 20, fontWeight: 'bold' }
+  container: { flex: 1 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', padding: 20, alignItems: 'center', marginTop: 10 },
+  headerTitle: { fontSize: 20, color: '#fff', fontWeight: 'bold', marginLeft: 10 },
+  statusDot: { width: 12, height: 12, borderRadius: 6 },
+  
+  // Kartlar
+  card: { backgroundColor: 'rgba(255,255,255,0.15)', marginHorizontal: 20, marginBottom: 15, borderRadius: 20, padding: 20 },
+  profileRow: { flexDirection: 'row', alignItems: 'center' },
+  //avatarContainer: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#e1e1e1', justifyContent: 'center', alignItems: 'center', marginRight: 15, overflow:'hidden' },
+  nameText: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
+  subText: { color: '#ddd', fontSize: 12 },
+  divider: { height: 1, backgroundColor: 'rgba(255,255,255,0.2)', marginVertical: 15 },
+  
+  infoRow: { flexDirection: 'row', justifyContent: 'space-around' },
+  infoItem: { alignItems: 'center' },
+  infoLabel: { color: '#ccc', fontSize: 11, marginTop: 5, fontWeight:'bold' },
+  infoValue: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
+
+  // Nabız
+  cardTitleLabel: { color: '#ccc', fontSize: 12, marginBottom: 5 },
+  bpmRow: { flexDirection: 'row', alignItems: 'flex-end' },
+  bpmText: { color: '#fff', fontSize: 48, fontWeight: 'bold', lineHeight: 50 },
+  bpmUnit: { color: '#ccc', fontSize: 16, marginLeft: 5, marginBottom: 8 },
+
+  // Grid
+  statusGrid: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 20, marginBottom: 20 },
+  statusCard: { 
+    backgroundColor: 'rgba(255,255,255,0.15)', 
+    width: (screenWidth - 50) / 2, 
+    borderRadius: 15, 
+    padding: 15, 
+    alignItems: 'center', 
+    height: 110, 
+    justifyContent:'center' 
+  },
+  statusLabel: { color: '#ccc', marginTop: 5 },
+  statusValue: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
+  timeText: { color: '#ddd', fontSize: 10, marginTop: 2 },
+  alarmCardRed: { backgroundColor: '#ff4444' },
+  alarmCardOrange: { backgroundColor: '#ffbb33' },
+
+  // SOS BUTONU
+  sosContainer: { alignItems: 'center', marginTop: 5, marginBottom: 40 },
+  sosButton: {
+    width: 110, height: 110, borderRadius: 55,
+    backgroundColor: '#ff3333', // Parlak kırmızı
+    justifyContent: 'center', alignItems: 'center',
+    elevation: 12, // Android gölge
+    shadowColor: '#ff0000', // iOS gölge
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.6, shadowRadius: 10,
+    borderWidth: 4, borderColor: 'rgba(255,255,255,0.3)'
+  },
+  sosInnerCircle: {
+    width: 86, height: 86, borderRadius: 43,
+    backgroundColor: 'transparent',
+    borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.6)',
+    justifyContent: 'center', alignItems: 'center'
+  },
+  sosText: { color: '#fff', fontSize: 26, fontWeight: '900' },
+  sosLabel: { color: '#ccc', marginTop: 12, fontSize: 13, fontWeight: '500' },
+
+  // MODAL TASARIMI
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 20 },
+  modalContent: { backgroundColor: '#fff', borderRadius: 20, padding: 25 },
+  modalTitle: { fontSize: 20, fontWeight: 'bold', color: '#333', textAlign: 'center', marginBottom: 20 },
+  inputLabel: { fontSize: 13, color: '#666', marginBottom: 6, fontWeight:'600' },
+  input: { backgroundColor: '#f5f5f5', borderRadius: 10, padding: 12, marginBottom: 15, color: '#333', borderWidth:1, borderColor:'#ddd' },
+  row: { flexDirection: 'row' },
+  dividerGray: { height: 1, backgroundColor: '#eee', marginVertical: 15 },
+  sectionHeader: { fontSize: 15, color: '#333', fontWeight:'bold', marginBottom: 15 },
+  modalButtons: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 },
+  cancelBtn: { flex:1, backgroundColor: '#9CA3AF', padding: 15, borderRadius: 12, marginRight: 10, alignItems:'center' },
+  saveBtn: { flex:1, backgroundColor: '#3b5998', padding: 15, borderRadius: 12, alignItems:'center' },
+  btnText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
+
+  // FOTOĞRAF STİLLERİ (YENİ)
+  avatarContainer: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#e1e1e1', justifyContent: 'center', alignItems: 'center', marginRight: 15, overflow:'hidden' },
+  avatarImage: { width: 50, height: 50 },
+  editAvatarContainer: { width: 100, height: 100, borderRadius: 50, backgroundColor: '#f0f0f0', justifyContent: 'center', alignItems: 'center', overflow: 'visible', borderWidth:1, borderColor:'#ddd' },
+  editAvatarImage: { width: 100, height: 100, borderRadius: 50 },
+  editIconBadge: { position: 'absolute', bottom: 0, right: 0, backgroundColor: '#4A90E2', width: 30, height: 30, borderRadius: 15, justifyContent: 'center', alignItems: 'center', borderWidth:2, borderColor:'#fff' },
+  changePhotoText: { color: '#4A90E2', fontSize: 14, fontWeight:'600', marginTop: 10 },
+  
+  alertBox: { backgroundColor: '#fff', padding: 30, borderRadius: 20, alignItems: 'center', width:'85%' },
+  alertTitle: { fontSize: 24, color: 'red', fontWeight: 'bold', marginVertical: 15 },
+  countdownText: { fontSize: 70, fontWeight: 'bold', color: 'red' }
 });
 
 export default PatientHomeScreen;

@@ -95,6 +95,19 @@ export const authService = {
       return null;
     }
   },
+  updatePatientData: async (uid, newData) => {
+    try {
+      const snapshot = await firestore().collection('Patients').where('uid', '==', uid).get();
+      if (snapshot.empty) return false;
+
+      const docId = snapshot.docs[0].id;
+      await firestore().collection('Patients').doc(docId).update(newData);
+      return true;
+    } catch (error) {
+      console.error("Veri güncelleme hatası:", error);
+      return false;
+    }
+  },
 
   // 5. KİŞİ EKLEME (UID İLE)
   addContact: async (patientUid, newContact) => {
