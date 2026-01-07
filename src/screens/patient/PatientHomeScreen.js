@@ -28,7 +28,7 @@ const PatientHomeScreen = ({ navigation }) => {
   const [currentMinuteAvg, setCurrentMinuteAvg] = useState(72);
   const [patientData, setPatientData] = useState(null);
 
-  // Yerel Resim State'i (YENİ)
+  // Yerel Resim State'i
   const [localProfileImage, setLocalProfileImage] = useState(null);
   
   // Alarmlar
@@ -41,11 +41,12 @@ const PatientHomeScreen = ({ navigation }) => {
   // --- MODAL (DÜZENLEME) STATE ---
   const [isEditModalVisible, setEditModalVisible] = useState(false);
   const [editForm, setEditForm] = useState({
+    name: '', // Isim alani eklendi
     age: '',
     bloodType: '',
     minHeartRate: '50',
     maxHeartRate: '120',
-    photoUri: null, // YENİ: Resim yolu
+    photoUri: null, 
   });
 
   // --- REFS ---
@@ -53,8 +54,11 @@ const PatientHomeScreen = ({ navigation }) => {
   const heartRateRef = useRef(0);
   const isFallDetectedRef = useRef(false);
   const minuteBuffer = useRef([]); 
+  
+  // SMS Kilitleri (Zamanlayıcılar)
   const lastHeartRateSmsTime = useRef(0);
   const lastMovementTime = useRef(Date.now());
+  const lastESmsTime = useRef(0); // YENİ: E sinyali SMS kilidi
 
   // Ref Senkronizasyonu
   useEffect(() => { patientDataRef.current = patientData; }, [patientData]);
@@ -68,7 +72,7 @@ const PatientHomeScreen = ({ navigation }) => {
         // 1. Veritabanından verileri çek
         const data = await authService.getPatientData(currentUser.uid);
         
-        // 2. Telefondan kayıtlı resmi çek (YENİ)
+        // 2. Telefondan kayıtlı resmi çek
         const savedImage = await AsyncStorage.getItem(`profileImage_${currentUser.uid}`);
         if (savedImage) {
             setLocalProfileImage(savedImage);
@@ -76,13 +80,13 @@ const PatientHomeScreen = ({ navigation }) => {
 
         if (data) {
             setPatientData(data);
-            // Edit formunu doldur
             setEditForm({
+                name: data.name || '', // Isim verisini cek
                 age: data.age || '',
                 bloodType: data.bloodType || '',
                 minHeartRate: data.thresholds?.minHeartRate ? String(data.thresholds.minHeartRate) : '50',
                 maxHeartRate: data.thresholds?.maxHeartRate ? String(data.thresholds.maxHeartRate) : '120',
-                photoUri: savedImage || null, // Form açılınca mevcut resim gelsin
+                photoUri: savedImage || null, 
             });
         }
     }
@@ -94,7 +98,7 @@ const PatientHomeScreen = ({ navigation }) => {
     }, [loadSettings])
   );
 
-  // --- FOTOĞRAF SEÇME (YENİ) ---
+  // --- FOTOĞRAF SEÇME ---
   const handleSelectPhoto = () => {
     const options = { mediaType: 'photo', quality: 0.7 };
     launchImageLibrary(options, (response) => {
@@ -116,14 +120,13 @@ const PatientHomeScreen = ({ navigation }) => {
     if (!currentUser) return;
 
     try {
-        // 1. Resmi Telefona Kaydet (YENİ)
         if (editForm.photoUri) {
             await AsyncStorage.setItem(`profileImage_${currentUser.uid}`, editForm.photoUri);
-            setLocalProfileImage(editForm.photoUri); // Ekranı anında güncelle
+            setLocalProfileImage(editForm.photoUri); 
         }
 
-        // 2. Diğer verileri Firestore'a kaydet
         const updatedData = {
+            name: editForm.name, // Isim guncellemesi
             age: editForm.age,
             bloodType: editForm.bloodType,
             thresholds: {
@@ -136,7 +139,7 @@ const PatientHomeScreen = ({ navigation }) => {
         if (success) {
             Alert.alert("Başarılı", "Profil bilgileri güncellendi.");
             setEditModalVisible(false);
-            loadSettings(); // Ekranı yenile
+            loadSettings(); 
         } else {
             Alert.alert("Hata", "Güncelleme yapılamadı.");
         }
@@ -158,6 +161,16 @@ const PatientHomeScreen = ({ navigation }) => {
 
     const onMotion = (motion) => {
         if (!isMounted) return;
+
+        // --- YENİ EKLENEN KISIM: E SİNYALİ KONTROLÜ ---
+        // Eğer E değeri 1 ise ve son 1 dakika (60000ms) içinde mesaj atılmadıysa
+        if ((motion.E === 1 || motion.E === '1') && (Date.now() - lastESmsTime.current > 60000)) {
+            console.log("🚨 E Sinyali (1) Algılandı! SMS Gönderiliyor...");
+            sendESignalSMS(); // SMS Fonksiyonunu çağır
+            lastESmsTime.current = Date.now(); // Zamanlayıcıyı güncelle
+        }
+        // ------------------------------------------------
+
         const totalAccel = Math.sqrt(motion.x ** 2 + motion.y ** 2 + motion.z ** 2);
         
         // 1. Düşme Kontrolü (>2.5G)
@@ -165,7 +178,7 @@ const PatientHomeScreen = ({ navigation }) => {
             triggerFallAlarm();
         }
 
-        // 2. Hareket Kontrolü (Hareketsizlik tespiti için)
+        // 2. Hareket Kontrolü
         if (Math.abs(totalAccel - 16384) > 2000) {
             lastMovementTime.current = Date.now();
             const nowStr = new Date().toLocaleTimeString().slice(0,5);
@@ -192,65 +205,65 @@ const PatientHomeScreen = ({ navigation }) => {
     return () => { isMounted = false; BleService.disconnect(); };
   }, [isInactivityDetected]); 
 
-  // --- HAREKETSİZLİK ALARMI (Zamanlayıcı) ---
+  // --- HAREKETSİZLİK ALARMI ---
   useEffect(() => {
     const interval = setInterval(() => {
         const timeDiff = Date.now() - lastMovementTime.current;
         if (timeDiff > INACTIVITY_LIMIT && !isInactivityDetected && !isFallDetected) {
             setIsInactivityDetected(true);
             setStatus('Hareketsiz');
-            Alert.alert(
-                "Hareketsizlik Uyarısı",
-                "Uzun süredir hareket etmediğiniz tespit edildi. İyi misiniz?",
+            Alert.alert("Hareketsizlik", "Uzun süredir hareket etmediniz.",
                 [
-                    { text: "İyiyim", onPress: () => { 
-                        lastMovementTime.current = Date.now(); 
-                        setIsInactivityDetected(false); 
-                        setStatus('Normal'); 
-                    }},
+                    { text: "İyiyim", onPress: () => { lastMovementTime.current = Date.now(); setIsInactivityDetected(false); setStatus('Normal'); }},
                     { text: "Yardım", onPress: () => sendInactivitySMS() }
                 ]
             );
         }
-    }, 10000); // 10 saniyede bir kontrol
+    }, 10000); 
     return () => clearInterval(interval);
   }, [isInactivityDetected, isFallDetected]);
 
   // --- YARDIMCI METODLAR ---
 
+  // YENİ: E Sinyali SMS Gönderme Fonksiyonu
+  const sendESignalSMS = useCallback(() => {
+    const pData = patientDataRef.current;
+    if (pData?.emergencyContacts?.length) {
+        pData.emergencyContacts.forEach(c => sendEmergencySms(c.phone, `🚨 ACİL: Cihazdan Acil Durum Sinyali (E) Alındı! Lütfen kontrol edin.`));
+    }
+    setStatus('Acil Durum (E)!');
+    Alert.alert("UYARI", "Cihazdan manuel acil durum sinyali alındı.");
+  }, []);
+
   const checkHeartRateHealth = useCallback((currentHr) => {
     const pData = patientDataRef.current;
     if (!pData || isFallDetectedRef.current) return;
-    
-    // Veritabanından gelen eşikleri kullan, yoksa varsayılan
     const { minHeartRate, maxHeartRate } = pData.thresholds || { minHeartRate: 50, maxHeartRate: 120 };
     
     if (currentHr > maxHeartRate || (currentHr < minHeartRate && currentHr > 10)) {
         setStatus(currentHr > maxHeartRate ? 'Yüksek Nabız' : 'Düşük Nabız');
-        
-        // 5 Dakika (300000ms) SMS kilidi
         if (Date.now() - lastHeartRateSmsTime.current > 300000) {
             if (pData.emergencyContacts?.length) {
-                pData.emergencyContacts.forEach(c => sendEmergencySms(c.phone, `🚨 ACİL: Hastanızın nabzı kritik seviyede (${currentHr} BPM).`));
+                pData.emergencyContacts.forEach(c => sendEmergencySms(c.phone, `🚨 ACİL: Nabız kritik (${currentHr} BPM).`));
                 lastHeartRateSmsTime.current = Date.now();
             }
         }
-    } else if (!isInactivityDetected) {
+    } else if (!isInactivityDetected && status !== 'Acil Durum (E)!') {
         setStatus('Normal');
     }
-  }, [isInactivityDetected]);
+  }, [isInactivityDetected, status]);
 
   const sendInactivitySMS = useCallback(() => {
     const pData = patientDataRef.current;
     if (pData?.emergencyContacts?.length) {
-        pData.emergencyContacts.forEach(c => sendEmergencySms(c.phone, `⚠️ UYARI: Hastanız uzun süredir hareketsiz. Kontrol ediniz.`));
+        pData.emergencyContacts.forEach(c => sendEmergencySms(c.phone, `⚠️ UYARI: Hasta hareketsiz.`));
     }
   }, []);
 
   const sendActualFallSMS = useCallback(() => {
     const pData = patientDataRef.current;
     if (pData?.emergencyContacts?.length) {
-        pData.emergencyContacts.forEach(c => sendEmergencySms(c.phone, `🚨 DÜŞME ALGILANDI! Hastanız düşmüş olabilir.`));
+        pData.emergencyContacts.forEach(c => sendEmergencySms(c.phone, `🚨 DÜŞME ALGILANDI!`));
     }
     setStatus('Yardım Çağrıldı');
   }, []);
@@ -262,7 +275,7 @@ const PatientHomeScreen = ({ navigation }) => {
         pData.emergencyContacts.forEach(c => sendEmergencySms(c.phone, "YARDIM EDİN! Manuel SOS Butonuna Basıldı."));
         Alert.alert("SOS", "Yardım mesajı gönderildi!");
     } else {
-        Alert.alert("Hata", "Kişi listesi boş, mesaj atılamadı.");
+        Alert.alert("Hata", "Kişi listesi boş.");
     }
     setTimeout(() => setIsPanicMode(false), 2000);
   }, []);
@@ -280,17 +293,8 @@ const PatientHomeScreen = ({ navigation }) => {
     }
   }, []);
 
-  const triggerFallAlarm = useCallback(() => { 
-      setStatus('DÜŞME!'); 
-      setIsFallDetected(true); 
-      setCountdown(10); 
-  }, []);
-
-  const resetFallAlarm = useCallback(() => { 
-      setIsFallDetected(false); 
-      setCountdown(10); 
-      setStatus('Normal'); 
-  }, []);
+  const triggerFallAlarm = useCallback(() => { setStatus('DÜŞME!'); setIsFallDetected(true); setCountdown(10); }, []);
+  const resetFallAlarm = useCallback(() => { setIsFallDetected(false); setCountdown(10); setStatus('Normal'); }, []);
 
   useEffect(() => {
     let interval = null;
@@ -298,13 +302,7 @@ const PatientHomeScreen = ({ navigation }) => {
     return () => clearInterval(interval);
   }, [isFallDetected]);
 
-  useEffect(() => { 
-      if (isFallDetected && countdown === 0) { 
-          sendActualFallSMS(); 
-          resetFallAlarm(); 
-      } 
-  }, [isFallDetected, countdown]);
-
+  useEffect(() => { if (isFallDetected && countdown === 0) { sendActualFallSMS(); resetFallAlarm(); } }, [isFallDetected, countdown]);
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: '#3b5998' }}> 
@@ -324,7 +322,6 @@ const PatientHomeScreen = ({ navigation }) => {
         <View style={styles.card}>
             <View style={styles.profileRow}>
                 <View style={styles.avatarContainer}>
-                    {/* RESİM GÖSTERİMİ */}
                     {localProfileImage ? (
                         <Image source={{ uri: localProfileImage }} style={styles.avatarImage} />
                     ) : (
@@ -332,11 +329,9 @@ const PatientHomeScreen = ({ navigation }) => {
                     )}
                 </View>
                 <View style={styles.profileInfo}>
-                    {/* İSİM DÜZELTMESİ (name) */}
                     <Text style={styles.nameText}>{patientData?.name || "Kullanıcı"}</Text>
                     <Text style={styles.subText}>Hasta Profili</Text>
                 </View>
-                {/* Düzenleme Butonu */}
                 <TouchableOpacity onPress={() => setEditModalVisible(true)} style={{ marginLeft: 'auto', padding: 5 }}>
                     <Icon name="pencil" size={24} color="#fff" />
                 </TouchableOpacity>
@@ -376,7 +371,7 @@ const PatientHomeScreen = ({ navigation }) => {
           />
         </View>
 
-        {/* DURUM KARTLARI (2'li GRID) */}
+        {/* DURUM KARTLARI */}
         <View style={styles.statusGrid}>
             <View style={[styles.statusCard, isFallDetected && styles.alarmCardRed]}>
                 <Icon name="human-accidental-fall" size={28} color={isFallDetected ? "#fff" : "#ff4081"} />
@@ -419,7 +414,6 @@ const PatientHomeScreen = ({ navigation }) => {
                 <View style={styles.modalContent}>
                     <Text style={styles.modalTitle}>Bilgileri Düzenle</Text>
                     
-                    {/* FOTOĞRAF SEÇME ALANI (YENİ) */}
                     <View style={{ alignItems: 'center', marginBottom: 20 }}>
                         <TouchableOpacity onPress={handleSelectPhoto} style={styles.editAvatarContainer}>
                             {editForm.photoUri ? (
@@ -433,6 +427,10 @@ const PatientHomeScreen = ({ navigation }) => {
                         </TouchableOpacity>
                         <Text style={styles.changePhotoText}>Fotoğrafı Değiştir</Text>
                     </View>
+
+                    {/* İSİM ALANI EKLENDİ */}
+                    <Text style={styles.inputLabel}>İsim Soyisim</Text>
+                    <TextInput style={styles.input} value={editForm.name} onChangeText={(t) => setEditForm({...editForm, name: t})}/>
 
                     <Text style={styles.inputLabel}>Yaş</Text>
                     <TextInput style={styles.input} value={editForm.age} onChangeText={(t) => setEditForm({...editForm, age: t})} keyboardType="numeric"/>
@@ -490,65 +488,33 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', justifyContent: 'space-between', padding: 20, alignItems: 'center', marginTop: 10 },
   headerTitle: { fontSize: 20, color: '#fff', fontWeight: 'bold', marginLeft: 10 },
   statusDot: { width: 12, height: 12, borderRadius: 6 },
-  
-  // Kartlar
   card: { backgroundColor: 'rgba(255,255,255,0.15)', marginHorizontal: 20, marginBottom: 15, borderRadius: 20, padding: 20 },
   profileRow: { flexDirection: 'row', alignItems: 'center' },
-  //avatarContainer: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#e1e1e1', justifyContent: 'center', alignItems: 'center', marginRight: 15, overflow:'hidden' },
+  avatarContainer: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#e1e1e1', justifyContent: 'center', alignItems: 'center', marginRight: 15, overflow:'hidden' },
+  avatarImage: { width: 50, height: 50 },
   nameText: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
   subText: { color: '#ddd', fontSize: 12 },
   divider: { height: 1, backgroundColor: 'rgba(255,255,255,0.2)', marginVertical: 15 },
-  
   infoRow: { flexDirection: 'row', justifyContent: 'space-around' },
   infoItem: { alignItems: 'center' },
   infoLabel: { color: '#ccc', fontSize: 11, marginTop: 5, fontWeight:'bold' },
   infoValue: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
-
-  // Nabız
   cardTitleLabel: { color: '#ccc', fontSize: 12, marginBottom: 5 },
   bpmRow: { flexDirection: 'row', alignItems: 'flex-end' },
   bpmText: { color: '#fff', fontSize: 48, fontWeight: 'bold', lineHeight: 50 },
   bpmUnit: { color: '#ccc', fontSize: 16, marginLeft: 5, marginBottom: 8 },
-
-  // Grid
   statusGrid: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 20, marginBottom: 20 },
-  statusCard: { 
-    backgroundColor: 'rgba(255,255,255,0.15)', 
-    width: (screenWidth - 50) / 2, 
-    borderRadius: 15, 
-    padding: 15, 
-    alignItems: 'center', 
-    height: 110, 
-    justifyContent:'center' 
-  },
+  statusCard: { backgroundColor: 'rgba(255,255,255,0.15)', width: (screenWidth - 50) / 2, borderRadius: 15, padding: 15, alignItems: 'center', height: 110, justifyContent:'center' },
   statusLabel: { color: '#ccc', marginTop: 5 },
   statusValue: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
   timeText: { color: '#ddd', fontSize: 10, marginTop: 2 },
   alarmCardRed: { backgroundColor: '#ff4444' },
   alarmCardOrange: { backgroundColor: '#ffbb33' },
-
-  // SOS BUTONU
   sosContainer: { alignItems: 'center', marginTop: 5, marginBottom: 40 },
-  sosButton: {
-    width: 110, height: 110, borderRadius: 55,
-    backgroundColor: '#ff3333', // Parlak kırmızı
-    justifyContent: 'center', alignItems: 'center',
-    elevation: 12, // Android gölge
-    shadowColor: '#ff0000', // iOS gölge
-    shadowOffset: { width: 0, height: 5 },
-    shadowOpacity: 0.6, shadowRadius: 10,
-    borderWidth: 4, borderColor: 'rgba(255,255,255,0.3)'
-  },
-  sosInnerCircle: {
-    width: 86, height: 86, borderRadius: 43,
-    backgroundColor: 'transparent',
-    borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.6)',
-    justifyContent: 'center', alignItems: 'center'
-  },
+  sosButton: { width: 110, height: 110, borderRadius: 55, backgroundColor: '#ff3333', justifyContent: 'center', alignItems: 'center', elevation: 12, shadowColor: '#ff0000', shadowOffset: { width: 0, height: 5 }, shadowOpacity: 0.6, shadowRadius: 10, borderWidth: 4, borderColor: 'rgba(255,255,255,0.3)' },
+  sosInnerCircle: { width: 86, height: 86, borderRadius: 43, backgroundColor: 'transparent', borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.6)', justifyContent: 'center', alignItems: 'center' },
   sosText: { color: '#fff', fontSize: 26, fontWeight: '900' },
   sosLabel: { color: '#ccc', marginTop: 12, fontSize: 13, fontWeight: '500' },
-
-  // MODAL TASARIMI
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 20 },
   modalContent: { backgroundColor: '#fff', borderRadius: 20, padding: 25 },
   modalTitle: { fontSize: 20, fontWeight: 'bold', color: '#333', textAlign: 'center', marginBottom: 20 },
@@ -561,15 +527,10 @@ const styles = StyleSheet.create({
   cancelBtn: { flex:1, backgroundColor: '#9CA3AF', padding: 15, borderRadius: 12, marginRight: 10, alignItems:'center' },
   saveBtn: { flex:1, backgroundColor: '#3b5998', padding: 15, borderRadius: 12, alignItems:'center' },
   btnText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
-
-  // FOTOĞRAF STİLLERİ (YENİ)
-  avatarContainer: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#e1e1e1', justifyContent: 'center', alignItems: 'center', marginRight: 15, overflow:'hidden' },
-  avatarImage: { width: 50, height: 50 },
   editAvatarContainer: { width: 100, height: 100, borderRadius: 50, backgroundColor: '#f0f0f0', justifyContent: 'center', alignItems: 'center', overflow: 'visible', borderWidth:1, borderColor:'#ddd' },
   editAvatarImage: { width: 100, height: 100, borderRadius: 50 },
   editIconBadge: { position: 'absolute', bottom: 0, right: 0, backgroundColor: '#4A90E2', width: 30, height: 30, borderRadius: 15, justifyContent: 'center', alignItems: 'center', borderWidth:2, borderColor:'#fff' },
   changePhotoText: { color: '#4A90E2', fontSize: 14, fontWeight:'600', marginTop: 10 },
-  
   alertBox: { backgroundColor: '#fff', padding: 30, borderRadius: 20, alignItems: 'center', width:'85%' },
   alertTitle: { fontSize: 24, color: 'red', fontWeight: 'bold', marginVertical: 15 },
   countdownText: { fontSize: 70, fontWeight: 'bold', color: 'red' }

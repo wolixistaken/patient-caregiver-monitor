@@ -10,9 +10,12 @@ class BleService {
     
     this.onHeartRateUpdate = null;
     this.onMotionUpdate = null;
+    
+    // Son okunan verileri saklayalım ki parça parça gelseler bile birleştirebilelim
+    this.lastMotion = { x: 0, y: 0, z: 0, E: 0 };
   }
 
-  // İzinler (Aynı)
+  // İzinler
   async requestPermissions() {
     if (Platform.OS === 'android') {
       const granted = await PermissionsAndroid.requestMultiple([
@@ -29,7 +32,7 @@ class BleService {
     return true;
   }
 
-  // Bağlanma (GÜNCELLENDİ: MTU İSTEĞİ EKLENDİ)
+  // Bağlanma
   scanAndConnect(deviceName, onConnected) {
     console.log("BLE: Cihaz aranıyor...");
     this.manager.startDeviceScan(null, null, (error, device) => {
@@ -38,27 +41,19 @@ class BleService {
         return;
       }
 
-      if (device && (device.name === "cdtp" || device.localName === "cdtp")) {
+      if (device && (device.name === deviceName || device.localName === deviceName)) {
         console.log("BLE: Cihaz bulundu:", device.name);
         this.manager.stopDeviceScan();
         
         device.connect()
           .then(async (device) => {
             console.log('BLE: Bağlantı Kuruldu.');
-
-            // --- MTU ARTIRMA İŞLEMİ ---
-            // iOS bunu otomatik yapar, Android için manuel istemek gerekir.
             if (Platform.OS === 'android') {
                 try {
-                    // 512 Byte isteyelim (Maksimum sınır)
                     const mtu = await device.requestMTU(512);
-                    console.log(`✅ BLE: MTU Başarıyla Artırıldı: ${mtu} byte`);
-                } catch (e) {
-                    console.log("❌ BLE: MTU Artırma başarısız:", e);
-                    // Başarısız olsa bile devam et, belki varsayılan yeterlidir.
-                }
+                    console.log(`✅ BLE: MTU Artırıldı: ${mtu}`);
+                } catch (e) { }
             }
-            
             return device.discoverAllServicesAndCharacteristics();
           })
           .then((device) => {
@@ -94,18 +89,17 @@ class BleService {
     );
   }
 
-  // Veri İşleme (P ve A Kontrolü)
+  // Veri İşleme
   handleData(base64Value) {
     try {
         const decodedString = this.decodeBase64(base64Value);
-        
-        // P verisini anında görelim
-        if (decodedString.includes('P')) {
-             console.log("📡 P GELDİ:", decodedString);
-        }
-
         this.buffer += decodedString;
-
+        
+        // Gelen veri " | " ile ayrılmış olabilir, bunu da bölmemiz gerekebilir.
+        // Ama genellikle satır sonu karakteri ile gelir.
+        // Veri örneği: "A:1030,-1304,16102 | P:88 | E:0"
+        
+        // Önce satır satır veya " | " ile ayıralım
         const parts = this.buffer.split(/[|\r\n]+/);
 
         if (this.buffer.length > 2000) this.buffer = "";
@@ -117,39 +111,66 @@ class BleService {
                 this.parseLine(cleanLine);
             }
         }
-
     } catch (e) {
         console.log("Parsing Hatası:", e);
     }
   }
 
+  // --- PARSING KISMI (GÜNCELLENDİ) ---
   parseLine(line) {
-    // Nabız (P)
-    if (line.includes('P')) {
-        const match = line.match(/P[:\s]?(\d+)/);
+    // Örnek Veri: "A:1030,-1304,16102" veya "P:88" veya "E:0"
+    // Bu fonksiyon her bir parçayı ayrı ayrı analiz eder.
+
+    // 1. Nabız (P)
+    if (line.includes('P:')) {
+        const match = line.match(/P:(\d+)/);
         if (match && match[1]) {
             const heartRate = parseInt(match[1], 10);
-            console.log(`❤️ NABIZ GRAFİĞE GİDİYOR: ${heartRate}`); 
             if (!isNaN(heartRate) && this.onHeartRateUpdate) {
                 this.onHeartRateUpdate(heartRate);
             }
         }
     }
 
-    // Hareket (A)
-    if (line.includes('A')) {
+    // 2. Hareket (A)
+    if (line.includes('A:')) {
         try {
-            const dataStr = line.substring(line.indexOf('A') + 1).replace(':', '').trim();
+            // "A:1030,-1304,16102" -> "1030,-1304,16102"
+            const dataStr = line.split('A:')[1].split('|')[0].trim(); 
             const values = dataStr.split(',').map(v => parseFloat(v));
 
-            if (values.length >= 3 && this.onMotionUpdate) {
-                this.onMotionUpdate({
-                    x: values[0],
-                    y: values[1],
-                    z: values[2],
-                });
+            if (values.length >= 3) {
+                this.lastMotion.x = values[0];
+                this.lastMotion.y = values[1];
+                this.lastMotion.z = values[2];
+                
+                // Motion verisi geldiğinde UI'ı güncelle
+                if (this.onMotionUpdate) {
+                    this.onMotionUpdate(this.lastMotion);
+                }
             }
-        } catch (err) {}
+        } catch (err) { }
+    }
+
+    // 3. Acil Durum (E) - YENİ
+    // Format: "E:1" veya "E:0"
+    if (line.includes('E:')) {
+        try {
+            const match = line.match(/E:(\d+)/);
+            if (match && match[1]) {
+                const eVal = parseInt(match[1], 10);
+                
+                // E değerini güncelle
+                this.lastMotion.E = eVal;
+
+                console.log("E Sinyali Algılandı:", eVal);
+
+                // Eğer sadece E verisi geldiyse bile motion update tetikle ki UI haberdar olsun
+                if (this.onMotionUpdate) {
+                    this.onMotionUpdate(this.lastMotion);
+                }
+            }
+        } catch (err) { }
     }
   }
 
@@ -159,12 +180,8 @@ class BleService {
   }
 
   disconnect() {
-    if (this.subscription) {
-      this.subscription.remove();
-    }
-    if (this.device) {
-      this.device.cancelConnection();
-    }
+    if (this.subscription) this.subscription.remove();
+    if (this.device) this.device.cancelConnection();
   }
 
   decodeBase64(str) {
