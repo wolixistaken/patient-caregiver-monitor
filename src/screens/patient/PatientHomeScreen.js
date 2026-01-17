@@ -7,15 +7,15 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { LineChart } from 'react-native-chart-kit';
 import { useFocusEffect } from '@react-navigation/native'; 
 import auth from '@react-native-firebase/auth';
-import { launchImageLibrary } from 'react-native-image-picker'; // EKLENDİ
-import AsyncStorage from '@react-native-async-storage/async-storage'; // EKLENDİ
+import { launchImageLibrary } from 'react-native-image-picker';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import BleService from '../../services/BleService';
 import { authService } from '../../services/authService';
 import { sendEmergencySms } from '../../utils/SmsHelper';
 
 const screenWidth = Dimensions.get('window').width;
-const INACTIVITY_LIMIT = 30 * 60 * 1000; // 30 Dakika (Hareketsizlik süresi)
+const INACTIVITY_LIMIT = 30 * 60 * 1000; // 30 Dakika
 
 const PatientHomeScreen = ({ navigation }) => {
   // --- STATE TANIMLARI ---
@@ -41,7 +41,7 @@ const PatientHomeScreen = ({ navigation }) => {
   // --- MODAL (DÜZENLEME) STATE ---
   const [isEditModalVisible, setEditModalVisible] = useState(false);
   const [editForm, setEditForm] = useState({
-    name: '', // Isim alani eklendi
+    name: '',
     age: '',
     bloodType: '',
     minHeartRate: '50',
@@ -49,30 +49,33 @@ const PatientHomeScreen = ({ navigation }) => {
     photoUri: null, 
   });
 
-  // --- REFS ---
+  // --- REFS (Performans ve Döngü Önleme İçin) ---
   const patientDataRef = useRef(null);
   const heartRateRef = useRef(0);
   const isFallDetectedRef = useRef(false);
   const minuteBuffer = useRef([]); 
   
-  // SMS Kilitleri (Zamanlayıcılar)
+  // Hareketsizlik durumu için Ref (useEffect'i tetiklememek için)
+  const isInactivityDetectedRef = useRef(isInactivityDetected);
+
+  // SMS Kilitleri
   const lastHeartRateSmsTime = useRef(0);
   const lastMovementTime = useRef(Date.now());
-  const lastESmsTime = useRef(0); // YENİ: E sinyali SMS kilidi
+  const lastESmsTime = useRef(0); 
 
   // Ref Senkronizasyonu
   useEffect(() => { patientDataRef.current = patientData; }, [patientData]);
   useEffect(() => { heartRateRef.current = heartRate; }, [heartRate]);
   useEffect(() => { isFallDetectedRef.current = isFallDetected; }, [isFallDetected]);
+  
+  // State değişince Ref'i güncelle
+  useEffect(() => { isInactivityDetectedRef.current = isInactivityDetected; }, [isInactivityDetected]);
 
   // --- VERİ YÜKLEME ---
   const loadSettings = useCallback(async () => {
     const currentUser = auth().currentUser;
     if (currentUser) {
-        // 1. Veritabanından verileri çek
         const data = await authService.getPatientData(currentUser.uid);
-        
-        // 2. Telefondan kayıtlı resmi çek
         const savedImage = await AsyncStorage.getItem(`profileImage_${currentUser.uid}`);
         if (savedImage) {
             setLocalProfileImage(savedImage);
@@ -81,7 +84,7 @@ const PatientHomeScreen = ({ navigation }) => {
         if (data) {
             setPatientData(data);
             setEditForm({
-                name: data.name || '', // Isim verisini cek
+                name: data.name || '',
                 age: data.age || '',
                 bloodType: data.bloodType || '',
                 minHeartRate: data.thresholds?.minHeartRate ? String(data.thresholds.minHeartRate) : '50',
@@ -98,7 +101,7 @@ const PatientHomeScreen = ({ navigation }) => {
     }, [loadSettings])
   );
 
-  // --- FOTOĞRAF SEÇME ---
+  // --- FOTOĞRAF VE AYARLAR ---
   const handleSelectPhoto = () => {
     const options = { mediaType: 'photo', quality: 0.7 };
     launchImageLibrary(options, (response) => {
@@ -114,7 +117,6 @@ const PatientHomeScreen = ({ navigation }) => {
     });
   };
 
-  // --- AYARLARI KAYDETME ---
   const handleSaveSettings = async () => {
     const currentUser = auth().currentUser;
     if (!currentUser) return;
@@ -126,7 +128,7 @@ const PatientHomeScreen = ({ navigation }) => {
         }
 
         const updatedData = {
-            name: editForm.name, // Isim guncellemesi
+            name: editForm.name,
             age: editForm.age,
             bloodType: editForm.bloodType,
             thresholds: {
@@ -148,7 +150,7 @@ const PatientHomeScreen = ({ navigation }) => {
     }
   };
 
-  // --- BLE VE SENSÖR DİNLEYİCİSİ ---
+  // --- BLE VE SENSÖR DİNLEYİCİSİ (FIXED) ---
   useEffect(() => {
     let isMounted = true;
 
@@ -162,18 +164,16 @@ const PatientHomeScreen = ({ navigation }) => {
     const onMotion = (motion) => {
         if (!isMounted) return;
 
-        // --- YENİ EKLENEN KISIM: E SİNYALİ KONTROLÜ ---
-        // Eğer E değeri 1 ise ve son 1 dakika (60000ms) içinde mesaj atılmadıysa
+        // E Sinyali Kontrolü
         if ((motion.E === 1 || motion.E === '1') && (Date.now() - lastESmsTime.current > 60000)) {
-            console.log("🚨 E Sinyali (1) Algılandı! SMS Gönderiliyor...");
-            sendESignalSMS(); // SMS Fonksiyonunu çağır
-            lastESmsTime.current = Date.now(); // Zamanlayıcıyı güncelle
+            console.log("🚨 E Sinyali Algılandı!");
+            sendESignalSMS();
+            lastESmsTime.current = Date.now();
         }
-        // ------------------------------------------------
 
         const totalAccel = Math.sqrt(motion.x ** 2 + motion.y ** 2 + motion.z ** 2);
         
-        // 1. Düşme Kontrolü (>2.5G)
+        // 1. Düşme Kontrolü
         if (totalAccel > 25000 && !isFallDetectedRef.current) {
             triggerFallAlarm();
         }
@@ -182,9 +182,11 @@ const PatientHomeScreen = ({ navigation }) => {
         if (Math.abs(totalAccel - 16384) > 2000) {
             lastMovementTime.current = Date.now();
             const nowStr = new Date().toLocaleTimeString().slice(0,5);
+            // State güncellemesini azaltmak için kontrol (isteğe bağlı eklenebilir)
             setLastActivityTimeStr(prev => (prev !== nowStr ? nowStr : prev));
             
-            if (isInactivityDetected) {
+            // Ref kullanarak kontrol ediyoruz (useEffect tetiklenmiyor)
+            if (isInactivityDetectedRef.current) {
                 setIsInactivityDetected(false);
                 setStatus('Normal');
             }
@@ -202,14 +204,16 @@ const PatientHomeScreen = ({ navigation }) => {
     };
 
     initBle();
+    // Cleanup: sadece component unmount olduğunda çalışır
     return () => { isMounted = false; BleService.disconnect(); };
-  }, [isInactivityDetected]); 
+  }, []); // DİKKAT: Bağımlılık dizisi boş bırakıldı.
 
-  // --- HAREKETSİZLİK ALARMI ---
+  // --- HAREKETSİZLİK ALARMI (Zamanlayıcı) ---
   useEffect(() => {
     const interval = setInterval(() => {
         const timeDiff = Date.now() - lastMovementTime.current;
-        if (timeDiff > INACTIVITY_LIMIT && !isInactivityDetected && !isFallDetected) {
+        // Ref değerlerini kontrol et
+        if (timeDiff > INACTIVITY_LIMIT && !isInactivityDetectedRef.current && !isFallDetectedRef.current) {
             setIsInactivityDetected(true);
             setStatus('Hareketsiz');
             Alert.alert("Hareketsizlik", "Uzun süredir hareket etmediniz.",
@@ -221,15 +225,14 @@ const PatientHomeScreen = ({ navigation }) => {
         }
     }, 10000); 
     return () => clearInterval(interval);
-  }, [isInactivityDetected, isFallDetected]);
+  }, []); // Sadece mount olduğunda timer başlasın
 
   // --- YARDIMCI METODLAR ---
 
-  // YENİ: E Sinyali SMS Gönderme Fonksiyonu
   const sendESignalSMS = useCallback(() => {
     const pData = patientDataRef.current;
     if (pData?.emergencyContacts?.length) {
-        pData.emergencyContacts.forEach(c => sendEmergencySms(c.phone, `🚨 ACİL: Cihazdan Acil Durum Sinyali (E) Alındı! Lütfen kontrol edin.`));
+        pData.emergencyContacts.forEach(c => sendEmergencySms(c.phone, `🚨 ACİL: Cihazdan Acil Durum Sinyali (E) Alındı!`));
     }
     setStatus('Acil Durum (E)!');
     Alert.alert("UYARI", "Cihazdan manuel acil durum sinyali alındı.");
@@ -248,10 +251,10 @@ const PatientHomeScreen = ({ navigation }) => {
                 lastHeartRateSmsTime.current = Date.now();
             }
         }
-    } else if (!isInactivityDetected && status !== 'Acil Durum (E)!') {
+    } else if (!isInactivityDetectedRef.current && status !== 'Acil Durum (E)!') {
         setStatus('Normal');
     }
-  }, [isInactivityDetected, status]);
+  }, [status]);
 
   const sendInactivitySMS = useCallback(() => {
     const pData = patientDataRef.current;
@@ -280,16 +283,22 @@ const PatientHomeScreen = ({ navigation }) => {
     setTimeout(() => setIsPanicMode(false), 2000);
   }, []);
 
+  // PERFORMANS İYİLEŞTİRMESİ BURADA:
   const processChartData = useCallback((hrValue) => {
     minuteBuffer.current.push(hrValue);
+    
+    // Buffer dolduğunda (60 veri) geçmişe ekle
     if (minuteBuffer.current.length >= 60) {
         const avg = Math.round(minuteBuffer.current.reduce((a, b) => a + b, 0) / 60);
         setHistoryData(prev => [...prev.slice(1), avg]);
         minuteBuffer.current = [];
         setCurrentMinuteAvg(hrValue); 
     } else {
-        const currentAvg = Math.round(minuteBuffer.current.reduce((a, b) => a + b, 0) / minuteBuffer.current.length);
-        setCurrentMinuteAvg(currentAvg);
+        // HER VERİDE DEĞİL, HER 10 VERİDE BİR GÜNCELLE (UI ÇÖKMESİNİ ÖNLER)
+        if (minuteBuffer.current.length % 10 === 0) { 
+            const currentAvg = Math.round(minuteBuffer.current.reduce((a, b) => a + b, 0) / minuteBuffer.current.length);
+            setCurrentMinuteAvg(currentAvg);
+        }
     }
   }, []);
 
@@ -302,7 +311,7 @@ const PatientHomeScreen = ({ navigation }) => {
     return () => clearInterval(interval);
   }, [isFallDetected]);
 
-  useEffect(() => { if (isFallDetected && countdown === 0) { sendActualFallSMS(); resetFallAlarm(); } }, [isFallDetected, countdown]);
+  useEffect(() => { if (isFallDetected && countdown === 0) { sendActualFallSMS(); resetFallAlarm(); } }, [isFallDetected, countdown, sendActualFallSMS, resetFallAlarm]);
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: '#3b5998' }}> 
@@ -428,7 +437,6 @@ const PatientHomeScreen = ({ navigation }) => {
                         <Text style={styles.changePhotoText}>Fotoğrafı Değiştir</Text>
                     </View>
 
-                    {/* İSİM ALANI EKLENDİ */}
                     <Text style={styles.inputLabel}>İsim Soyisim</Text>
                     <TextInput style={styles.input} value={editForm.name} onChangeText={(t) => setEditForm({...editForm, name: t})}/>
 

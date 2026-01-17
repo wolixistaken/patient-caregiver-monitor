@@ -11,7 +11,7 @@ class BleService {
     this.onHeartRateUpdate = null;
     this.onMotionUpdate = null;
     
-    // Son okunan verileri saklayalım ki parça parça gelseler bile birleştirebilelim
+    // Son okunan verileri saklayalım
     this.lastMotion = { x: 0, y: 0, z: 0, E: 0 };
   }
 
@@ -79,7 +79,8 @@ class BleService {
       CHARACTERISTIC_UUID,
       (error, characteristic) => {
         if (error) {
-          console.log('BLE Okuma Hatası:', error.message);
+          // Logları minimize ettik
+          // console.log('BLE Okuma Hatası:', error.message);
           return;
         }
         if (characteristic && characteristic.value) {
@@ -95,11 +96,6 @@ class BleService {
         const decodedString = this.decodeBase64(base64Value);
         this.buffer += decodedString;
         
-        // Gelen veri " | " ile ayrılmış olabilir, bunu da bölmemiz gerekebilir.
-        // Ama genellikle satır sonu karakteri ile gelir.
-        // Veri örneği: "A:1030,-1304,16102 | P:88 | E:0"
-        
-        // Önce satır satır veya " | " ile ayıralım
         const parts = this.buffer.split(/[|\r\n]+/);
 
         if (this.buffer.length > 2000) this.buffer = "";
@@ -112,15 +108,12 @@ class BleService {
             }
         }
     } catch (e) {
-        console.log("Parsing Hatası:", e);
+        // Hata logunu kaldırdık (production için)
     }
   }
 
-  // --- PARSING KISMI (GÜNCELLENDİ) ---
+  // --- PARSING KISMI ---
   parseLine(line) {
-    // Örnek Veri: "A:1030,-1304,16102" veya "P:88" veya "E:0"
-    // Bu fonksiyon her bir parçayı ayrı ayrı analiz eder.
-
     // 1. Nabız (P)
     if (line.includes('P:')) {
         const match = line.match(/P:(\d+)/);
@@ -135,7 +128,7 @@ class BleService {
     // 2. Hareket (A)
     if (line.includes('A:')) {
         try {
-            // "A:1030,-1304,16102" -> "1030,-1304,16102"
+            // "A:1030,-1304,16102"
             const dataStr = line.split('A:')[1].split('|')[0].trim(); 
             const values = dataStr.split(',').map(v => parseFloat(v));
 
@@ -144,7 +137,7 @@ class BleService {
                 this.lastMotion.y = values[1];
                 this.lastMotion.z = values[2];
                 
-                // Motion verisi geldiğinde UI'ı güncelle
+                // UI güncellemesi
                 if (this.onMotionUpdate) {
                     this.onMotionUpdate(this.lastMotion);
                 }
@@ -152,20 +145,14 @@ class BleService {
         } catch (err) { }
     }
 
-    // 3. Acil Durum (E) - YENİ
-    // Format: "E:1" veya "E:0"
+    // 3. Acil Durum (E)
     if (line.includes('E:')) {
         try {
             const match = line.match(/E:(\d+)/);
             if (match && match[1]) {
                 const eVal = parseInt(match[1], 10);
-                
-                // E değerini güncelle
                 this.lastMotion.E = eVal;
 
-                console.log("E Sinyali Algılandı:", eVal);
-
-                // Eğer sadece E verisi geldiyse bile motion update tetikle ki UI haberdar olsun
                 if (this.onMotionUpdate) {
                     this.onMotionUpdate(this.lastMotion);
                 }
@@ -181,7 +168,9 @@ class BleService {
 
   disconnect() {
     if (this.subscription) this.subscription.remove();
-    if (this.device) this.device.cancelConnection();
+    if (this.device) {
+        this.device.cancelConnection().catch(() => {});
+    }
   }
 
   decodeBase64(str) {
