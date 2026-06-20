@@ -1,97 +1,91 @@
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# Patient–Caregiver Monitor (ÇDTP)
 
-# Getting Started
+A cross-platform **React Native** mobile app that connects **patients** and their
+**caregivers**. A patient's wearable device streams data over **Bluetooth LE**; the
+app visualizes it, lets caregivers monitor their patients remotely, and triggers
+**emergency SMS alerts** when needed.
 
-> **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.
+> Turkish project name: *ÇDTP – hasta-bakıcı projesi mobil uygulaması*
 
-## Step 1: Start Metro
+## ✨ Features
 
-First, you will need to run **Metro**, the JavaScript build tool for React Native.
+**Authentication**
+- Email/password login & sign-up backed by Firebase Auth
 
-To start the Metro dev server, run the following command from the root of your React Native project:
+**Patient role**
+- Home dashboard with live readings from the connected wearable
+- Manage assigned caregivers
+- Configure emergency contacts for automatic SMS alerts
+
+**Caregiver role**
+- Dashboard listing the patients being monitored
+- Per-patient detail view with vitals and history
+
+**Core capabilities**
+- 🔵 Bluetooth LE wearable integration (`react-native-ble-plx`)
+- 🚨 Emergency SMS notifications (`react-native-direct-sms`)
+- 📊 Health-data charts (`react-native-chart-kit`)
+- ☁️ Firebase backend — Auth, Firestore, Storage
+
+## 🛠️ Tech Stack
+
+`React Native 0.82` · `React Navigation (stack + bottom tabs)` · `Firebase (@react-native-firebase)` · `react-native-ble-plx` · `react-native-direct-sms` · `react-native-chart-kit` · `AsyncStorage`
+
+## 📁 Project Structure
+
+```
+src/
+├── navigation/
+│   ├── PatientTabs.js          # Bottom-tab navigator for the patient role
+│   └── CaregiverTabs.js        # Bottom-tab navigator for the caregiver role
+├── screens/
+│   ├── LoginScreen.js
+│   ├── SignUpScreen.js
+│   ├── patient/
+│   │   ├── PatientHomeScreen.js
+│   │   ├── CaregiverManagementScreen.js
+│   │   └── EmergencyContactScreen.js
+│   └── caregiver/
+│       ├── CaregiverHomeScreen.js
+│       └── PatientDetailScreen.js
+├── services/
+│   ├── BleService.js           # Bluetooth LE connection & data handling
+│   └── authService.js          # Firebase authentication
+└── utils/
+    └── SmsHelper.js            # Emergency SMS helper
+```
+
+## 🚀 Getting Started
+
+> Complete the [React Native environment setup](https://reactnative.dev/docs/set-up-your-environment) first.
 
 ```sh
-# Using npm
+# 1) Install dependencies
+npm install
+
+# iOS only: install CocoaPods deps
+bundle install && bundle exec pod install
+
+# 2) Start Metro
 npm start
 
-# OR using Yarn
-yarn start
+# 3) Run the app (in a second terminal)
+npm run android   # Android
+npm run ios       # iOS
 ```
 
-## Step 2: Build and run your app
+### Firebase configuration
 
-With Metro running, open a new terminal window/pane from the root of your React Native project, and use one of the following commands to build and run your Android or iOS app:
+This app requires a Firebase project. Add your own config files (these are **not**
+committed):
 
-### Android
+- Android: `android/app/google-services.json`
+- iOS: `ios/<App>/GoogleService-Info.plist`
 
-```sh
-# Using npm
-npm run android
+Enable **Authentication**, **Firestore**, and **Storage** in the Firebase console.
 
-# OR using Yarn
-yarn android
-```
+## 📝 Notes
 
-### iOS
-
-For iOS, remember to install CocoaPods dependencies (this only needs to be run on first clone or after updating native deps).
-
-The first time you create a new project, run the Ruby bundler to install CocoaPods itself:
-
-```sh
-bundle install
-```
-
-Then, and every time you update your native dependencies, run:
-
-```sh
-bundle exec pod install
-```
-
-For more information, please visit [CocoaPods Getting Started guide](https://guides.cocoapods.org/using/getting-started.html).
-
-```sh
-# Using npm
-npm run ios
-
-# OR using Yarn
-yarn ios
-```
-
-If everything is set up correctly, you should see your new app running in the Android Emulator, iOS Simulator, or your connected device.
-
-This is one way to run your app — you can also build it directly from Android Studio or Xcode.
-
-## Step 3: Modify your app
-
-Now that you have successfully run the app, let's make changes!
-
-Open `App.tsx` in your text editor of choice and make some changes. When you save, your app will automatically update and reflect these changes — this is powered by [Fast Refresh](https://reactnative.dev/docs/fast-refresh).
-
-When you want to forcefully reload, for example to reset the state of your app, you can perform a full reload:
-
-- **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Dev Menu**, accessed via <kbd>Ctrl</kbd> + <kbd>M</kbd> (Windows/Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (macOS).
-- **iOS**: Press <kbd>R</kbd> in iOS Simulator.
-
-## Congratulations! :tada:
-
-You've successfully run and modified your React Native App. :partying_face:
-
-### Now what?
-
-- If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
-- If you're curious to learn more about React Native, check out the [docs](https://reactnative.dev/docs/getting-started).
-
-# Troubleshooting
-
-If you're having issues getting the above steps to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
-
-# Learn More
-
-To learn more about React Native, take a look at the following resources:
-
-- [React Native Website](https://reactnative.dev) - learn more about React Native.
-- [Getting Started](https://reactnative.dev/docs/environment-setup) - an **overview** of React Native and how setup your environment.
-- [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
-- [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
-- [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
+- BLE and SMS features require a physical device and the relevant runtime
+  permissions (Bluetooth, Location, SMS) granted on Android.
+- Developed as a university term project.
